@@ -1,0 +1,496 @@
+-- Load Rayfield Library with enhanced error handling
+local success, Rayfield = pcall(function()
+    local libraryCode = game:HttpGet('https://sirius.menu/rayfield')
+    if not libraryCode or libraryCode == "" then
+        error("Empty or invalid library code")
+    end
+    return loadstring(libraryCode)()
+end)
+
+-- NEW: Load Sense ESP Library
+local senseSuccess, Sense = pcall(function()
+    return loadstring(game:HttpGet('https://sirius.menu/sense'))()
+end)
+
+if not success or not Rayfield then
+    warn("Failed to load Rayfield library")
+    Rayfield = nil
+end
+
+-- Fallback UI if Rayfield fails
+local function createFallbackUI()
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Parent = game.Players.LocalPlayer.PlayerGui
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0, 300, 0, 200)
+    Frame.Position = UDim2.new(0.5, -150, 0.5, -100)
+    Frame.BackgroundColor3 = Color3.new(0, 0, 0)
+    Frame.BackgroundTransparency = 0.5
+    Frame.Parent = ScreenGui
+    local TextLabel = Instance.new("TextLabel")
+    TextLabel.Size = UDim2.new(1, 0, 1, 0)
+    TextLabel.Text = "Niv HUB: Rayfield UI failed."
+    TextLabel.TextColor3 = Color3.new(1, 1, 1)
+    TextLabel.BackgroundTransparency = 1
+    TextLabel.TextScaled = true
+    TextLabel.Parent = Frame
+    return {
+        CreateTab = function(self) return { CreateSection = function(self) return {} end } end,
+        CreateSection = function(self) return {} end,
+        CreateToggle = function(self, args) end,
+        CreateSlider = function(self, args) end,
+        CreateColorPicker = function(self, args) end,
+        CreateParagraph = function(self, args) end,
+        CreateDropdown = function(self, args) return { Refresh = function(self, list, bool) end, Set = function(self, val) end } end,
+        CreateButton = function(self, args) end,
+        Notify = function(self, args) end
+    }
+end
+
+-- Debug configuration values
+local windowConfig = {
+    Name = "Niv HUB",
+    LoadingTitle = "Niv HUB",
+    LoadingSubtitle = "Advanced Player Visuals",
+    Theme = "Default"
+}
+
+-- Create the main GUI window
+local Window
+if Rayfield then
+    local windowSuccess, windowError = pcall(function()
+        Window = Rayfield:CreateWindow(windowConfig)
+    end)
+    if not windowSuccess then
+        Window = createFallbackUI()
+    end
+else
+    Window = createFallbackUI()
+end
+
+-- Hitbox Module logic
+local HitboxModule = {}
+local hitboxCache = {}
+local connections = {}
+local originalWalkSpeeds = {}
+local walkspeedConnection 
+local walkspeedEnabled = false 
+local walkspeedValue = 16 
+
+-- Fly configuration
+local flySpeed = 50 
+local maxForce = Vector3.new(math.huge, math.huge, math.huge)
+local flying = false
+local bodyVelocity = nil
+local bodyGyro = nil
+
+-- Fling configuration
+local flingEnabled = false
+local flingPart = nil
+
+-- Noclip configuration
+local noclipEnabled = false
+local noclipConnection = nil
+
+-- Infinite Jump configuration
+local infJumpEnabled = false
+local infJumpConnection = nil
+
+-- Teleport Logic Variables
+local selectedPlayerName = nil
+local displayNameMap = {} 
+
+-- Walkspeed functions
+local function setupWalkspeed(player)
+    if player ~= game.Players.LocalPlayer then return end
+    connections[player] = connections[player] or {}
+    connections[player].Walkspeed = player.CharacterAdded:Connect(function(character)
+        local humanoid = character:WaitForChild("Humanoid")
+        if not originalWalkSpeeds[player] then originalWalkSpeeds[player] = humanoid.WalkSpeed end
+        if walkspeedEnabled then humanoid.WalkSpeed = walkspeedValue end
+    end)
+    if player.Character then
+        local humanoid = player.Character:FindFirstChild("Humanoid")
+        if humanoid then
+            if not originalWalkSpeeds[player] then originalWalkSpeeds[player] = humanoid.WalkSpeed end
+            if walkspeedEnabled then humanoid.WalkSpeed = walkspeedValue end
+        end
+    end
+end
+
+local function toggleWalkspeed(enable)
+    walkspeedEnabled = enable
+    local player = game.Players.LocalPlayer
+    if enable then
+        if not walkspeedConnection then
+            walkspeedConnection = game:GetService("RunService").Heartbeat:Connect(function()
+                if player.Character and player.Character:FindFirstChild("Humanoid") then
+                    player.Character.Humanoid.WalkSpeed = walkspeedValue
+                end
+            end)
+        end
+    else
+        if walkspeedConnection then walkspeedConnection:Disconnect() walkspeedConnection = nil end
+        if player.Character and player.Character:FindFirstChild("Humanoid") then
+            player.Character.Humanoid.WalkSpeed = originalWalkSpeeds[player] or 16
+        end
+    end
+end
+
+-- Fly functions
+local function startFlying()
+    if flying then return end
+    local player = game.Players.LocalPlayer
+    local character = player.Character
+    if not character or not character:FindFirstChild("Humanoid") or not character:FindFirstChild("HumanoidRootPart") then return end
+    flying = true
+    character.Humanoid.PlatformStand = true
+    bodyVelocity = Instance.new("BodyVelocity")
+    bodyVelocity.MaxForce = maxForce
+    bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+    bodyVelocity.Parent = character.HumanoidRootPart
+    bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    bodyGyro.P = 9e4
+    bodyGyro.Parent = character.HumanoidRootPart
+end
+
+local function stopFlying()
+    if not flying then return end
+    flying = false
+    if game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("Humanoid") then
+        game.Players.LocalPlayer.Character.Humanoid.PlatformStand = false
+    end
+    if bodyVelocity then bodyVelocity:Destroy() bodyVelocity = nil end
+    if bodyGyro then bodyGyro:Destroy() bodyGyro = nil end
+end
+
+local function updateFlight()
+    if not flying then return end
+    local character = game.Players.LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    local camera = game.Workspace.CurrentCamera
+    local direction = Vector3.new(0, 0, 0)
+    local UIS = game:GetService("UserInputService")
+    if UIS:IsKeyDown(Enum.KeyCode.W) then direction = direction + camera.CFrame.LookVector end
+    if UIS:IsKeyDown(Enum.KeyCode.S) then direction = direction - camera.CFrame.LookVector end
+    if UIS:IsKeyDown(Enum.KeyCode.A) then direction = direction - camera.CFrame.RightVector end
+    if UIS:IsKeyDown(Enum.KeyCode.D) then direction = direction + camera.CFrame.RightVector end
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then direction = direction + Vector3.new(0, 1, 0) end
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then direction = direction - Vector3.new(0, 1, 0) end
+    if direction.Magnitude > 0 then direction = direction.Unit * flySpeed end
+    if bodyVelocity then bodyVelocity.Velocity = direction end
+    if bodyGyro then bodyGyro.CFrame = camera.CFrame end
+end
+
+-- Fling Function logic
+local function toggleFling(enable)
+    flingEnabled = enable
+    local character = game.Players.LocalPlayer.Character
+    if enable and character and character:FindFirstChild("HumanoidRootPart") then
+        flingPart = Instance.new("AngularVelocity")
+        flingPart.Name = "NivFling"
+        flingPart.AngularVelocity = Vector3.new(0, 99999, 0)
+        flingPart.MaxTorque = math.huge
+        flingPart.Attachment0 = character.HumanoidRootPart:FindFirstChild("RootAttachment") or Instance.new("Attachment", character.HumanoidRootPart)
+        flingPart.Parent = character.HumanoidRootPart
+        for _, part in pairs(character:GetChildren()) do
+            if part:IsA("BasePart") then part.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0) end
+        end
+    else
+        if flingPart then flingPart:Destroy() flingPart = nil end
+        if character then
+            for _, part in pairs(character:GetChildren()) do
+                if part:IsA("BasePart") then part.CustomPhysicalProperties = nil end
+            end
+        end
+    end
+end
+
+-- Noclip logic
+local function toggleNoclip(enable)
+    noclipEnabled = enable
+    if enable then
+        noclipConnection = game:GetService("RunService").Stepped:Connect(function()
+            if noclipEnabled and game.Players.LocalPlayer.Character then
+                for _, part in pairs(game.Players.LocalPlayer.Character:GetDescendants()) do
+                    if part:IsA("BasePart") then part.CanCollide = false end
+                end
+            end
+        end)
+    else
+        if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
+    end
+end
+
+-- Infinite Jump logic
+local function toggleInfJump(enable)
+    infJumpEnabled = enable
+    if enable then
+        infJumpConnection = game:GetService("UserInputService").JumpRequest:Connect(function()
+            if infJumpEnabled then
+                local character = game.Players.LocalPlayer.Character
+                if character and character:FindFirstChildOfClass("Humanoid") then
+                    character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
+                end
+            end
+        end)
+    else
+        if infJumpConnection then infJumpConnection:Disconnect() infJumpConnection = nil end
+    end
+end
+
+-- Hitbox Logic
+HitboxModule.Enabled = false
+HitboxModule.HitboxSize = 1
+HitboxModule.HitboxOffset = -2.5
+
+function HitboxModule:UpdateHitbox(player)
+    if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") or player == game.Players.LocalPlayer then return end
+    if hitboxCache[player] then if hitboxCache[player].Hitbox then hitboxCache[player].Hitbox:Destroy() end hitboxCache[player] = nil end
+    if HitboxModule.Enabled then
+        local hitboxPart = Instance.new("Part")
+        hitboxPart.Size = Vector3.new(HitboxModule.HitboxSize, HitboxModule.HitboxSize, HitboxModule.HitboxSize)
+        hitboxPart.Position = player.Character.HumanoidRootPart.Position + Vector3.new(0, HitboxModule.HitboxOffset, 0)
+        hitboxPart.Anchored = false
+        hitboxPart.CanCollide = false
+        hitboxPart.Transparency = 0.5
+        hitboxPart.Parent = game.Workspace
+        local weld = Instance.new("WeldConstraint")
+        weld.Part0 = player.Character.HumanoidRootPart
+        weld.Part1 = hitboxPart
+        weld.Parent = hitboxPart
+        hitboxCache[player] = { Hitbox = hitboxPart }
+    end
+end
+
+-- Initialize player handling
+local function setupPlayer(player)
+    if player == game.Players.LocalPlayer then
+        setupWalkspeed(player)
+        connections[player] = connections[player] or {}
+        connections[player].FlyUpdate = game:GetService("RunService").RenderStepped:Connect(updateFlight)
+        connections[player].CharacterAdded = player.CharacterAdded:Connect(function()
+            if flying then task.wait(0.5) startFlying() end
+            if flingEnabled then task.wait(0.5) toggleFling(true) end
+        end)
+        return
+    end
+    connections[player] = {}
+    connections[player].CharacterAdded = player.CharacterAdded:Connect(function()
+        if HitboxModule.Enabled then HitboxModule:UpdateHitbox(player) end
+    end)
+    if player.Character and HitboxModule.Enabled then HitboxModule:UpdateHitbox(player) end
+end
+
+for _, player in pairs(game.Players:GetPlayers()) do setupPlayer(player) end
+game.Players.PlayerAdded:Connect(setupPlayer)
+
+-- SENSE ESP INITIALIZATION
+if Sense then
+    Sense.teamSettings.enemy.enabled = false
+    Sense.teamSettings.enemy.box = false
+    Sense.teamSettings.enemy.name = false
+    Sense.teamSettings.enemy.healthBar = false
+    Sense.teamSettings.enemy.distance = false
+    Sense.teamSettings.enemy.tracer = false -- FIXED: Changed from tracers to tracer
+    Sense.teamSettings.enemy.chams = false
+    Sense.Load()
+end
+
+-- Create ESP Tab
+local espTab = Window:CreateTab("ESP", "eye")
+local espSection = espTab:CreateSection("Sense ESP Visuals")
+
+espTab:CreateToggle({
+    Name = "Enable ESP",
+    CurrentValue = false,
+    Callback = function(Value)
+        Sense.teamSettings.enemy.enabled = Value
+    end
+})
+
+espTab:CreateToggle({
+    Name = "Show Boxes",
+    CurrentValue = false,
+    Callback = function(Value)
+        Sense.teamSettings.enemy.box = Value
+    end
+})
+
+espTab:CreateToggle({
+    Name = "Show Names",
+    CurrentValue = false,
+    Callback = function(Value)
+        Sense.teamSettings.enemy.name = Value
+    end
+})
+
+espTab:CreateToggle({
+    Name = "Show Health Bar",
+    CurrentValue = false,
+    Callback = function(Value)
+        Sense.teamSettings.enemy.healthBar = Value
+    end
+})
+
+espTab:CreateToggle({
+    Name = "Show Distance",
+    CurrentValue = false,
+    Callback = function(Value)
+        Sense.teamSettings.enemy.distance = Value
+    end
+})
+
+-- FIXED: ESP Tracer Toggle
+espTab:CreateToggle({
+    Name = "Show Tracers",
+    CurrentValue = false,
+    Callback = function(Value)
+        Sense.teamSettings.enemy.tracer = Value -- FIXED: Changed from .tracers to .tracer
+    end
+})
+
+espTab:CreateToggle({
+    Name = "Show Chams",
+    CurrentValue = false,
+    Callback = function(Value)
+        Sense.teamSettings.enemy.chams = Value
+    end
+})
+
+-- Create Hitbox Tab
+local hitboxTab = Window:CreateTab("Hitbox", "target")
+hitboxTab:CreateInput({
+    Name = "Hitbox Size",
+    PlaceholderText = "Size",
+    Callback = function(Value)
+        local num = tonumber(Value)
+        if num then HitboxModule.HitboxSize = num end
+    end
+})
+hitboxTab:CreateToggle({
+    Name = "Enable Hitbox",
+    CurrentValue = false,
+    Callback = function(Value)
+        HitboxModule.Enabled = Value
+        for _, p in pairs(game.Players:GetPlayers()) do HitboxModule:UpdateHitbox(p) end
+    end
+})
+
+-- Teleport Tab
+local teleportTab = Window:CreateTab("Teleport", "map-pin")
+local teleportSection = teleportTab:CreateSection("Player Teleport (Display Names)")
+
+local function getDisplayNames()
+    local displayNames = {}
+    displayNameMap = {} 
+    for _, player in pairs(game.Players:GetPlayers()) do
+        if player ~= game.Players.LocalPlayer then
+            table.insert(displayNames, player.DisplayName)
+            displayNameMap[player.DisplayName] = player.Name 
+        end
+    end
+    return displayNames
+end
+
+local playerDropdown = teleportTab:CreateDropdown({
+    Name = "Select Player",
+    Options = getDisplayNames(),
+    CurrentOption = "",
+    MultipleOptions = false,
+    Callback = function(Options)
+        selectedPlayerName = Options[1]
+    end,
+})
+
+teleportTab:CreateButton({
+    Name = "Refresh Player List",
+    Callback = function()
+        playerDropdown:Refresh(getDisplayNames(), true)
+        Rayfield:Notify({Title = "Niv HUB", Content = "Display Names updated!", Duration = 2})
+    end,
+})
+
+teleportTab:CreateButton({
+    Name = "Teleport To",
+    Callback = function()
+        if selectedPlayerName then
+            local realUsername = displayNameMap[selectedPlayerName]
+            local targetPlayer = realUsername and game.Players:FindFirstChild(realUsername)
+            
+            if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                local localChar = game.Players.LocalPlayer.Character
+                if localChar and localChar:FindFirstChild("HumanoidRootPart") then
+                    localChar.HumanoidRootPart.CFrame = targetPlayer.Character.HumanoidRootPart.CFrame
+                end
+            else
+                Rayfield:Notify({Title = "Teleport Error", Content = "Player character not found!", Duration = 3})
+            end
+        else
+            Rayfield:Notify({Title = "Teleport Error", Content = "No player selected!", Duration = 3})
+        end
+    end,
+})
+
+-- Player Tab
+local playerTab = Window:CreateTab("Player", "user")
+
+-- Walkspeed Section
+playerTab:CreateSection("Movement Speed")
+playerTab:CreateSlider({
+    Name = "Walkspeed",
+    Range = {0, 200},
+    Increment = 1,
+    CurrentValue = 16,
+    Callback = function(Value)
+        walkspeedValue = Value
+        if walkspeedEnabled then toggleWalkspeed(true) end
+    end
+})
+playerTab:CreateToggle({
+    Name = "Enable Walkspeed",
+    CurrentValue = false,
+    Callback = function(Value) toggleWalkspeed(Value) end
+})
+
+-- Fly Section
+playerTab:CreateSection("Flight Controls")
+playerTab:CreateSlider({
+    Name = "Fly Speed",
+    Range = {0, 200},
+    Increment = 1,
+    CurrentValue = 50,
+    Callback = function(Value)
+        flySpeed = Value
+    end
+})
+playerTab:CreateToggle({
+    Name = "Enable Flying",
+    CurrentValue = false,
+    Callback = function(Value) if Value then startFlying() else stopFlying() end end
+})
+
+-- Other Utilities Section
+playerTab:CreateSection("Other Utilities")
+playerTab:CreateToggle({
+    Name = "Enable Infinite Jump",
+    CurrentValue = false,
+    Callback = function(Value) toggleInfJump(Value) end
+})
+playerTab:CreateToggle({
+    Name = "Enable Noclip",
+    CurrentValue = false,
+    Callback = function(Value) toggleNoclip(Value) end
+})
+playerTab:CreateToggle({
+    Name = "Enable Fling",
+    CurrentValue = false,
+    Callback = function(Value) toggleFling(Value) end
+})
+
+-- Info Tab
+local infoTab = Window:CreateTab("Info", "info")
+infoTab:CreateParagraph({Title = "Made By Niv", Content = "YouTube: @NivHub\nTikTok: @nivbloxxy"})
+
+Rayfield:Notify({Title = "Niv HUB", Content = "ESP Tracer Fixed!", Duration = 5})
