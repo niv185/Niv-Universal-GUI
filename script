@@ -493,4 +493,4 @@ playerTab:CreateToggle({
 local infoTab = Window:CreateTab("Info", "info")
 infoTab:CreateParagraph({Title = "Made By Niv", Content = "YouTube: @NivHub\nTikTok: @nivbloxxy"})
 
-Rayfield:Notify({Title = "Niv HUB", Content = "ESP Tracer Fixed!", Duration = 5})
+Rayfield:Notify({Title = "Niv HUB", Content = "tungtungtungsahurrrrr", Duration = 5})
